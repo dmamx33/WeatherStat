@@ -4,17 +4,20 @@
  * @Email:  daniel.murrieta-alvarez@alumni.fh-aachen.de
  * @Filename: main.cpp
  * @Last modified by:   daniel
- * @Last modified time: 2021-03-10T12:29:54+01:00
+ * @Last modified time: 2021-03-11T14:48:49+01:00
  * @License: CC by-sa
  */
 /////////////################# headers #####################////////////////
-#include <EEPROM.h>
 #include <Arduino.h>
 //#include <RTClib.h>
 #include <Wire.h>
 // #include <Adafruit_Sensor.h>
 // #include "Adafruit_BME680.h"
 #include "bsec.h"
+#include <SPIFFS.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 //#include "esp_task_wdt.h"
 //#include "soc/timer_group_struct.h"
 //#include "soc/timer_group_reg.h"
@@ -30,6 +33,9 @@ int PWMchannel = 0;
 int i = 0;
 char flag=0;
 boolean flag_inter_loop=false;
+const char * intro = "Time[ms],r_t[°C],p[hPa],r_hum[%],gas[Ohm],IAQ,IAQacc,temp[°C],h[%],S_IAQ,CO2_equ,bre_VOC,Gas%";
+String tempe_web;
+String iaq_web;
 /////////////################# functions #####################////////////////
 void loop2(void *parameter);
 void loop1(void *parameter);
@@ -38,6 +44,9 @@ void hw_wdt_disable(void);
 void checkIaqSensorStatus(void);
 /////////////################# handlers definition #####################///////
 /////////////################# Web Specific #####################///////
+const char *ssid = "FRITZ!Box 6591 Cable SW";         // replace with your SSID
+const char *password = "62407078731195560963"; // replace with your Password
+AsyncWebServer server(80);
 /////////////################# Arduino sh%& #####################///////////////
 TaskHandle_t Task2;
 TaskHandle_t Task1;
@@ -48,7 +57,6 @@ String output;
 /////////////################# SETUP #####################////////////////
 void setup() {
         Serial.begin(115200);
-        //Serial.println("---### Entrando en setup");
         Wire.begin();
 /////RTC begin and check
         // if (!rtc.begin()) {
@@ -59,15 +67,27 @@ void setup() {
         //         rtc.adjust(DateTime(__DATE__, __TIME__));
         //         Serial.println("RTC Found");
         // }
+///SPIFSSS begin and check
+        if(!SPIFFS.begin()) {
+                Serial.println("An Error has occurred while mounting SPIFFS");
+                return;
+        }
+        else Serial.println("SPIFFS Mounted correctly");
 /////PWM Settings
         ledcAttachPin(led_gpio, PWMchannel); // assign a led pins to a channel
         ledcSetup(PWMchannel, 10000, 10); // 12 kHz PWM, 8-bit resolution
-/////Enabling Multicore program execution
-        xTaskCreatePinnedToCore(loop2,"Task_2",10000,NULL,1,&Task2,1);
-        delay(500);
-        xTaskCreatePinnedToCore(loop1,"Task_1",10000,NULL,1,&Task1,0);
-        delay(500);
-        //hw_wdt_disable();
+////// Wifi Configs
+        WiFi.begin(ssid, password);
+        while (WiFi.status() != WL_CONNECTED)
+        {
+                delay(1000);
+                Serial.print("Connecting to WiFi..");
+                Serial.print(".");
+        }
+        Serial.print("\nConnected to the WiFi network: ");
+        Serial.println(WiFi.SSID());
+        Serial.print("IP address:");
+        Serial.print(WiFi.localIP());
 /////Initialize BME680 Sensor
         iaqSensor.begin(BME680_I2C_ADDR_SECONDARY, Wire);
         output = "\nBSEC library version " + String(iaqSensor.version.major) + "." + String(iaqSensor.version.minor) + "." + String(iaqSensor.version.major_bugfix) + "." + String(iaqSensor.version.minor_bugfix);
@@ -90,8 +110,34 @@ void setup() {
         iaqSensor.updateSubscription(sensorList, Number_susc_sens, BSEC_SAMPLE_RATE_LP);
         checkIaqSensorStatus();
         //Serial.println("------### Entrando en loops");
-        String intro = "Timestamp [ms], raw temperature [°C], pressure [hPa], raw relative humidity [%], gas [Ohm], IAQ, IAQ accuracy, temperature [°C], relative humidity [%], Static IAQ, CO2 equivalent, breath VOC equivalent, Gas Percentage %";
-        Serial.println(intro);
+/////Enabling Multicore program execution
+        xTaskCreatePinnedToCore(loop1,"Task_1",10000,NULL,1,&Task1,0);
+        //delay(500);
+        xTaskCreatePinnedToCore(loop2,"Task_2",10000,NULL,1,&Task2,1);
+        delay(500);
+        //hw_wdt_disable();
+
+/////Handlers
+        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+                request->send(SPIFFS, "/index.html");
+        });
+        // send style.css file from SPIFFS
+        server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request) {
+                request->send(SPIFFS, "/style.css", "text/css");
+        });
+        // send script.js file from SPIFFS
+        server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request) {
+                request->send(SPIFFS, "/script.js", "text/javascript");
+        });
+        server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request) {
+                request->send_P(200, "text/plain", tempe_web.c_str());
+        });
+        // send BME280 humidity
+        server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request) {
+                request->send_P(200, "text/plain", iaq_web.c_str());
+        });
+/////Initialize Server
+        server.begin(); // begin server at port 80
 }
 /////////////################# LOOP Executed in Core 0 #####################////////////////
 void loop2(void *parameter) {
@@ -101,23 +147,27 @@ void loop2(void *parameter) {
                 //Serial.print("---### LOOP2");
                 //Serial.println(i);//
                 unsigned long time_trigger = millis();
-                if (iaqSensor.run()) { // If new data is available
-                  output = String(time_trigger);
-                  output += ", " + String(iaqSensor.rawTemperature);
-                  output += ", " + String(iaqSensor.pressure);
-                  output += ", " + String(iaqSensor.rawHumidity);
-                  output += ", " + String(iaqSensor.gasResistance);
-                  output += ", " + String(iaqSensor.iaq);
-                  output += ", " + String(iaqSensor.iaqAccuracy);
-                  output += ", " + String(iaqSensor.temperature);
-                  output += ", " + String(iaqSensor.humidity);
-                  output += ", " + String(iaqSensor.staticIaq);
-                  output += ", " + String(iaqSensor.co2Equivalent);
-                  output += ", " + String(iaqSensor.breathVocEquivalent);
-                  output += ", " + String(iaqSensor.gasPercentage);
-                  Serial.println(output);
+                if (iaqSensor.run()) {   // If new data is available
+                        output = String(time_trigger);
+                        output += ", " + String(iaqSensor.rawTemperature);
+                        output += ", " + String(iaqSensor.pressure);
+                        output += ", " + String(iaqSensor.rawHumidity);
+                        output += ", " + String(iaqSensor.gasResistance);
+                        iaq_web = String(iaqSensor.iaq);
+                        output += ", " + iaq_web;
+                        output += ", " + String(iaqSensor.iaqAccuracy);
+                        tempe_web = String(iaqSensor.temperature);
+                        output += ", " + tempe_web;
+                        output += ", " + String(iaqSensor.humidity);
+                        output += ", " + String(iaqSensor.staticIaq);
+                        output += ", " + String(iaqSensor.co2Equivalent);
+                        output += ", " + String(iaqSensor.breathVocEquivalent);
+                        output += ", " + String(iaqSensor.gasPercentage);
+                        Serial.println(' ');
+                        Serial.println(intro);
+                        Serial.println(output);
                 } else {
-                  checkIaqSensorStatus();
+                        checkIaqSensorStatus();
                 }
 
                 if(flag_inter_loop) {
@@ -133,8 +183,8 @@ void loop2(void *parameter) {
 void loop1(void *parameter) {
         //Serial.print("---------### LOOP1");
         //Serial.println(i);//
-        //yield();
         while(1) {
+                yield();
                 ledcWrite(PWMchannel, i);
                 //delay(100);
                 if (!flag) {
@@ -163,8 +213,8 @@ void loop1(void *parameter) {
         //Serial.println("####Saliendo loop()");//
 }
 /////////////################# funciton  #####################////////////////
-void loop()
-{}
+void loop(){
+}
 /////////////################# funciton  #####################////////////////
 void feedTheDog(){
         // feed dog 0
@@ -187,8 +237,7 @@ void checkIaqSensorStatus(void)
                 if (iaqSensor.status < BSEC_OK) {
                         output = "BSEC error code : " + String(iaqSensor.status);
                         Serial.println(output);
-                        Serial.println("Halting ESP32...good bye") ;
-                        for (;;);
+                        //for (;;);
                         //errLeds(); /* Halt in case of failure */
                 } else {
                         output = "BSEC warning code : " + String(iaqSensor.status);
