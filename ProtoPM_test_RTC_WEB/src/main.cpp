@@ -4,10 +4,11 @@
  * @Email:  daniel.murrieta-alvarez@alumni.fh-aachen.de
  * @Filename: main.cpp
  * @Last modified by:   daniel
- * @Last modified time: 2021-03-10T02:35:36+01:00
+ * @Last modified time: 2021-03-10T12:29:54+01:00
  * @License: CC by-sa
  */
 /////////////################# headers #####################////////////////
+#include <EEPROM.h>
 #include <Arduino.h>
 //#include <RTClib.h>
 #include <Wire.h>
@@ -31,6 +32,7 @@ char flag=0;
 boolean flag_inter_loop=false;
 /////////////################# functions #####################////////////////
 void loop2(void *parameter);
+void loop1(void *parameter);
 void feedTheDog(void);
 void hw_wdt_disable(void);
 void checkIaqSensorStatus(void);
@@ -38,6 +40,7 @@ void checkIaqSensorStatus(void);
 /////////////################# Web Specific #####################///////
 /////////////################# Arduino sh%& #####################///////////////
 TaskHandle_t Task2;
+TaskHandle_t Task1;
 //RTC_DS3231 rtc;
 Bsec iaqSensor;
 String output;
@@ -45,7 +48,7 @@ String output;
 /////////////################# SETUP #####################////////////////
 void setup() {
         Serial.begin(115200);
-        Serial.println("---### Entrando en setup");
+        //Serial.println("---### Entrando en setup");
         Wire.begin();
 /////RTC begin and check
         // if (!rtc.begin()) {
@@ -60,7 +63,10 @@ void setup() {
         ledcAttachPin(led_gpio, PWMchannel); // assign a led pins to a channel
         ledcSetup(PWMchannel, 10000, 10); // 12 kHz PWM, 8-bit resolution
 /////Enabling Multicore program execution
-        xTaskCreatePinnedToCore(loop2,"Task_2",1000,NULL,1,&Task2,0);
+        xTaskCreatePinnedToCore(loop2,"Task_2",10000,NULL,1,&Task2,1);
+        delay(500);
+        xTaskCreatePinnedToCore(loop1,"Task_1",10000,NULL,1,&Task1,0);
+        delay(500);
         //hw_wdt_disable();
 /////Initialize BME680 Sensor
         iaqSensor.begin(BME680_I2C_ADDR_SECONDARY, Wire);
@@ -83,37 +89,39 @@ void setup() {
         };
         iaqSensor.updateSubscription(sensorList, Number_susc_sens, BSEC_SAMPLE_RATE_LP);
         checkIaqSensorStatus();
-        Serial.println("------### Entrando en loops");
+        //Serial.println("------### Entrando en loops");
+        String intro = "Timestamp [ms], raw temperature [°C], pressure [hPa], raw relative humidity [%], gas [Ohm], IAQ, IAQ accuracy, temperature [°C], relative humidity [%], Static IAQ, CO2 equivalent, breath VOC equivalent, Gas Percentage %";
+        Serial.println(intro);
 }
 /////////////################# LOOP Executed in Core 0 #####################////////////////
 void loop2(void *parameter) {
 
         while(1) {
                 yield();
-                Serial.print("---### LOOP2");
-                Serial.println(i);//
+                //Serial.print("---### LOOP2");
+                //Serial.println(i);//
+                unsigned long time_trigger = millis();
+                if (iaqSensor.run()) { // If new data is available
+                  output = String(time_trigger);
+                  output += ", " + String(iaqSensor.rawTemperature);
+                  output += ", " + String(iaqSensor.pressure);
+                  output += ", " + String(iaqSensor.rawHumidity);
+                  output += ", " + String(iaqSensor.gasResistance);
+                  output += ", " + String(iaqSensor.iaq);
+                  output += ", " + String(iaqSensor.iaqAccuracy);
+                  output += ", " + String(iaqSensor.temperature);
+                  output += ", " + String(iaqSensor.humidity);
+                  output += ", " + String(iaqSensor.staticIaq);
+                  output += ", " + String(iaqSensor.co2Equivalent);
+                  output += ", " + String(iaqSensor.breathVocEquivalent);
+                  output += ", " + String(iaqSensor.gasPercentage);
+                  Serial.println(output);
+                } else {
+                  checkIaqSensorStatus();
+                }
+
                 if(flag_inter_loop) {
-                        //esp_task_wdt_reset();//funktioniert nicht
-                        //feedTheDog();
-                        //yield();// Anti-Hund
-                        Serial.println("Leyendo RTC...");//
-                        // DateTime now = rtc.now();
-                        // Serial.println("RTC Leido...");//
-                        // Serial.print(now.hour(), DEC);
-                        // Serial.print(":");
-                        // Serial.print(now.minute(), DEC);
-                        // Serial.print(":");
-                        // Serial.println(now.second(), DEC);
-                        // Serial.print(daysOfTheWeek[now.dayOfTheWeek()]);
-                        // Serial.print(" ");
-                        // Serial.print(now.day(), DEC);
-                        // Serial.print("-");
-                        // Serial.print(now.month(), DEC);
-                        // Serial.print("-");
-                        // Serial.println(now.year(), DEC);
-                        // Serial.print("Temp:");
-                        // Serial.println(rtc.getTemperature());
-                        Serial.println("Loop2 says: Core "+String(xPortGetCoreID()));
+                        //Serial.println("Loop2 says: Core "+String(xPortGetCoreID()));
                         flag_inter_loop=false;
                         //vTaskDelay(10);///funktioniert nicht
                 }
@@ -122,36 +130,41 @@ void loop2(void *parameter) {
 
 }
 /////////////################# LOOP Executed in Core 1 #####################////////////////
-void loop() {
-      //Serial.print("---------### LOOP1");
+void loop1(void *parameter) {
+        //Serial.print("---------### LOOP1");
         //Serial.println(i);//
         //yield();
-        ledcWrite(PWMchannel, i);
-        //delay(100);
-        if (!flag) {
-                i++;
-                delay(2);
-        }
+        while(1) {
+                ledcWrite(PWMchannel, i);
+                //delay(100);
+                if (!flag) {
+                        i++;
+                        delay(2);
+                }
 
-        else{
-                i--;
-                delay(2);
-        }
+                else{
+                        i--;
+                        delay(2);
+                }
 
-        if(i==1023) {
-                flag=1;
-                delay(100);
-        }
-        if(i==0) {
-                flag=0;
-                ledcWrite(PWMchannel, 0);
-                yield();
-                delay(800);
-                Serial.println("Loop1 says: Core "+String(xPortGetCoreID()));
-                flag_inter_loop=true;
+                if(i==1023) {
+                        flag=1;
+                        delay(100);
+                }
+                if(i==0) {
+                        flag=0;
+                        ledcWrite(PWMchannel, 0);
+                        yield();
+                        delay(800);
+                        //Serial.println("Loop1 says: Core "+String(xPortGetCoreID()));
+                        flag_inter_loop=true;
+                }
         }
         //Serial.println("####Saliendo loop()");//
 }
+/////////////################# funciton  #####################////////////////
+void loop()
+{}
 /////////////################# funciton  #####################////////////////
 void feedTheDog(){
         // feed dog 0
@@ -174,6 +187,7 @@ void checkIaqSensorStatus(void)
                 if (iaqSensor.status < BSEC_OK) {
                         output = "BSEC error code : " + String(iaqSensor.status);
                         Serial.println(output);
+                        Serial.println("Halting ESP32...good bye") ;
                         for (;;);
                         //errLeds(); /* Halt in case of failure */
                 } else {
