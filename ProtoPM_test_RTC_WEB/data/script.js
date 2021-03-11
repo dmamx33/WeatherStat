@@ -1,7 +1,6 @@
-
 var chartT = new Highcharts.Chart({
     chart: { renderTo: 'chart-temperature' },
-    title: { text: 'BME280 Temperature Chart' },
+    title: { text: 'BME680 Temperature Chart' },
     series: [{
         showInLegend: false,
         data: []
@@ -41,8 +40,8 @@ setInterval(function () {
 }, 2000);
 
 var chartH = new Highcharts.Chart({
-    chart: { renderTo: 'chart-humidity' },
-    title: { text: 'BME280 Humidity Chart' },
+    chart: { renderTo: 'chart-IAQ' },
+    title: { text: 'BME680 IAQ Chart' },
     series: [{
         showInLegend: false,
         data: []
@@ -58,7 +57,7 @@ var chartH = new Highcharts.Chart({
         dateTimeLabelFormats: { second: '%H:%M:%S' }
     },
     yAxis: {
-        title: { text: 'Humidity in %' }
+        title: { text: 'IAQ Level %' }
     },
     credits: { enabled: false }
 });
@@ -76,6 +75,6 @@ setInterval(function () {
             }
         }
     };
-    xhttp.open("GET", "/humidity", true);
+    xhttp.open("GET", "/iaq", true);
     xhttp.send();
 }, 2000);

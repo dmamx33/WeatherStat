@@ -4,7 +4,7 @@
  * @Email:  daniel.murrieta-alvarez@alumni.fh-aachen.de
  * @Filename: main.cpp
  * @Last modified by:   daniel
- * @Last modified time: 2021-03-11T14:48:49+01:00
+ * @Last modified time: 2021-03-11T21:09:34+01:00
  * @License: CC by-sa
  */
 /////////////################# headers #####################////////////////
@@ -23,7 +23,9 @@
 //#include "soc/timer_group_reg.h"
 //#include "WeatherStat_RTC.h"
 //#include <DS3231.h>
-
+uint8_t bsec_config_iaq[] = {
+#include "config/generic_33v_3s_4d/bsec_iaq.txt"
+};
 /////////////################# directives #####################////////////////
 #define Number_susc_sens 11
 /////////////################# variables #####################////////////////
@@ -34,8 +36,10 @@ int i = 0;
 char flag=0;
 boolean flag_inter_loop=false;
 const char * intro = "Time[ms],r_t[°C],p[hPa],r_hum[%],gas[Ohm],IAQ,IAQacc,temp[°C],h[%],S_IAQ,CO2_equ,bre_VOC,Gas%";
+String output;
 String tempe_web;
 String iaq_web;
+String press_web;
 /////////////################# functions #####################////////////////
 void loop2(void *parameter);
 void loop1(void *parameter);
@@ -52,8 +56,6 @@ TaskHandle_t Task2;
 TaskHandle_t Task1;
 //RTC_DS3231 rtc;
 Bsec iaqSensor;
-String output;
-
 /////////////################# SETUP #####################////////////////
 void setup() {
         Serial.begin(115200);
@@ -107,6 +109,7 @@ void setup() {
                 BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
                 BSEC_OUTPUT_GAS_PERCENTAGE
         };
+        iaqSensor.setState(bsec_config_iaq);
         iaqSensor.updateSubscription(sensorList, Number_susc_sens, BSEC_SAMPLE_RATE_LP);
         checkIaqSensorStatus();
         //Serial.println("------### Entrando en loops");
@@ -132,10 +135,13 @@ void setup() {
         server.on("/temperature", HTTP_GET, [](AsyncWebServerRequest *request) {
                 request->send_P(200, "text/plain", tempe_web.c_str());
         });
-        // send BME280 humidity
-        server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request) {
+        // send BME680 humidity
+        server.on("/iaq", HTTP_GET, [](AsyncWebServerRequest *request) {
                 request->send_P(200, "text/plain", iaq_web.c_str());
         });
+        // server.on("/pressure", HTTP_GET, [](AsyncWebServerRequest *request) {
+        //         request->send_P(200, "text/plain", press_web.c_str());
+        // });
 /////Initialize Server
         server.begin(); // begin server at port 80
 }
@@ -150,7 +156,8 @@ void loop2(void *parameter) {
                 if (iaqSensor.run()) {   // If new data is available
                         output = String(time_trigger);
                         output += ", " + String(iaqSensor.rawTemperature);
-                        output += ", " + String(iaqSensor.pressure);
+                        press_web = String(iaqSensor.pressure/100);
+                        output += ", " + press_web;
                         output += ", " + String(iaqSensor.rawHumidity);
                         output += ", " + String(iaqSensor.gasResistance);
                         iaq_web = String(iaqSensor.iaq);
