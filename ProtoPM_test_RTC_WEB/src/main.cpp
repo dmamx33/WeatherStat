@@ -4,7 +4,7 @@
  * @Email:  daniel.murrieta-alvarez@alumni.fh-aachen.de
  * @Filename: main.cpp
  * @Last modified by:   daniel
- * @Last modified time: 2021-03-11T21:09:34+01:00
+ * @Last modified time: 2021-03-12T03:15:01+01:00
  * @License: CC by-sa
  */
 /////////////################# headers #####################////////////////
@@ -13,6 +13,7 @@
 #include <Wire.h>
 // #include <Adafruit_Sensor.h>
 // #include "Adafruit_BME680.h"
+#include <EEPROM.h>
 #include "bsec.h"
 #include <SPIFFS.h>
 #include <WiFi.h>
@@ -28,6 +29,7 @@ uint8_t bsec_config_iaq[] = {
 };
 /////////////################# directives #####################////////////////
 #define Number_susc_sens 11
+#define STATE_SAVE_PERIOD UINT32_C(360 * 60 * 1000) // 360 minutes - 4 times a day
 /////////////################# variables #####################////////////////
 //char daysOfTheWeek[7][12] = {"Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"};
 const byte led_gpio = 32; // the PWM pin the LED is attached to
@@ -36,16 +38,21 @@ int i = 0;
 char flag=0;
 boolean flag_inter_loop=false;
 const char * intro = "Time[ms],r_t[°C],p[hPa],r_hum[%],gas[Ohm],IAQ,IAQacc,temp[°C],h[%],S_IAQ,CO2_equ,bre_VOC,Gas%";
+uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE] = {0};
+uint16_t stateUpdateCounter = 0;
 String output;
 String tempe_web;
 String iaq_web;
 String press_web;
+String hum_web;
 /////////////################# functions #####################////////////////
 void loop2(void *parameter);
 void loop1(void *parameter);
 void feedTheDog(void);
 void hw_wdt_disable(void);
 void checkIaqSensorStatus(void);
+void loadState(void);
+void updateState(void);
 /////////////################# handlers definition #####################///////
 /////////////################# Web Specific #####################///////
 const char *ssid = "FRITZ!Box 6591 Cable SW";         // replace with your SSID
@@ -94,7 +101,10 @@ void setup() {
         iaqSensor.begin(BME680_I2C_ADDR_SECONDARY, Wire);
         output = "\nBSEC library version " + String(iaqSensor.version.major) + "." + String(iaqSensor.version.minor) + "." + String(iaqSensor.version.major_bugfix) + "." + String(iaqSensor.version.minor_bugfix);
         Serial.println(output);
-        checkIaqSensorStatus();
+        //checkIaqSensorStatus();
+        iaqSensor.setState(bsec_config_iaq);
+        //checkIaqSensorStatus();
+        loadState();
 
         bsec_virtual_sensor_t sensorList[Number_susc_sens] = {
                 BSEC_OUTPUT_RAW_TEMPERATURE,
@@ -109,7 +119,6 @@ void setup() {
                 BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
                 BSEC_OUTPUT_GAS_PERCENTAGE
         };
-        iaqSensor.setState(bsec_config_iaq);
         iaqSensor.updateSubscription(sensorList, Number_susc_sens, BSEC_SAMPLE_RATE_LP);
         checkIaqSensorStatus();
         //Serial.println("------### Entrando en loops");
@@ -139,9 +148,13 @@ void setup() {
         server.on("/iaq", HTTP_GET, [](AsyncWebServerRequest *request) {
                 request->send_P(200, "text/plain", iaq_web.c_str());
         });
-        // server.on("/pressure", HTTP_GET, [](AsyncWebServerRequest *request) {
-        //         request->send_P(200, "text/plain", press_web.c_str());
-        // });
+        server.on("/pressure", HTTP_GET, [](AsyncWebServerRequest *request) {
+                request->send_P(200, "text/plain", press_web.c_str());
+        });
+
+        server.on("/humidity", HTTP_GET, [](AsyncWebServerRequest *request) {
+                request->send_P(200, "text/plain", hum_web.c_str());
+        });
 /////Initialize Server
         server.begin(); // begin server at port 80
 }
@@ -165,7 +178,8 @@ void loop2(void *parameter) {
                         output += ", " + String(iaqSensor.iaqAccuracy);
                         tempe_web = String(iaqSensor.temperature);
                         output += ", " + tempe_web;
-                        output += ", " + String(iaqSensor.humidity);
+                        hum_web = String(iaqSensor.humidity);
+                        output += ", " + hum_web;
                         output += ", " + String(iaqSensor.staticIaq);
                         output += ", " + String(iaqSensor.co2Equivalent);
                         output += ", " + String(iaqSensor.breathVocEquivalent);
@@ -173,6 +187,8 @@ void loop2(void *parameter) {
                         Serial.println(' ');
                         Serial.println(intro);
                         Serial.println(output);
+                        updateState();
+
                 } else {
                         checkIaqSensorStatus();
                 }
@@ -193,6 +209,7 @@ void loop1(void *parameter) {
         while(1) {
                 yield();
                 ledcWrite(PWMchannel, i);
+                //Serial.println(BSEC_MAX_STATE_BLOB_SIZE);
                 //delay(100);
                 if (!flag) {
                         i++;
@@ -252,9 +269,75 @@ void checkIaqSensorStatus(void)
                 }
         }
 
+        if (iaqSensor.bme680Status != BME680_OK) {
+                if (iaqSensor.bme680Status < BME680_OK) {
+                        output = "BME680 error code : " + String(iaqSensor.bme680Status);
+                        Serial.println(output);
+                } else {
+                        output = "BME680 warning code : " + String(iaqSensor.bme680Status);
+                        Serial.println(output);
+                }
+        }
+        //iaqSensor.status = BSEC_OK;
 }
 /////////////################# funciton  #####################////////////////
+void loadState(void)
+{
+        if (EEPROM.read(0) == BSEC_MAX_STATE_BLOB_SIZE) {
+                // Existing state in EEPROM
+                Serial.println("Reading state from EEPROM");
+
+                for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE; i++) {
+                        bsecState[i] = EEPROM.read(i + 1);
+                        Serial.println(bsecState[i], HEX);
+                }
+
+                iaqSensor.setState(bsecState);
+                checkIaqSensorStatus();
+        } else {
+                // Erase the EEPROM with zeroes
+                Serial.println("Erasing EEPROM");
+
+                for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE + 1; i++)
+                        EEPROM.write(i, 0);
+
+                EEPROM.commit();
+        }
+}
 /////////////################# funciton  #####################////////////////
+void updateState(void)
+{
+        bool update = false;
+        /* Set a trigger to save the state. Here, the state is saved every STATE_SAVE_PERIOD with the first state being saved once the algorithm achieves full calibration, i.e. iaqAccuracy = 3 */
+        if (stateUpdateCounter == 0) {
+                if (iaqSensor.iaqAccuracy >= 3) {
+                        update = true;
+                        stateUpdateCounter++;
+                }
+        }
+        else {
+                /* Update every STATE_SAVE_PERIOD milliseconds */
+                if ((stateUpdateCounter * STATE_SAVE_PERIOD) < millis()) {
+                        update = true;
+                        stateUpdateCounter++;
+                }
+        }
+
+        if (update) {
+                iaqSensor.getState(bsecState);
+                checkIaqSensorStatus();
+
+                Serial.println("Writing state to EEPROM");
+
+                for (uint8_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE; i++) {
+                        EEPROM.write(i + 1, bsecState[i]);
+                        Serial.println(bsecState[i], HEX);
+                }
+
+                EEPROM.write(0, BSEC_MAX_STATE_BLOB_SIZE);
+                EEPROM.commit();
+        }
+}
 /////////////################# funciton  #####################////////////////
 /////////////################# funciton  #####################////////////////
 /////////////################# funciton  #####################////////////////
